@@ -2,13 +2,13 @@ use error_stack::{IntoReport, ResultExt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    address::AddressNew,
-    connector_response::{ConnectorResponse, ConnectorResponseNew, ConnectorResponseUpdate},
+    address::{Address, AddressNew, AddressUpdateInternal},
     errors,
     payment_attempt::{PaymentAttempt, PaymentAttemptNew, PaymentAttemptUpdate},
-    payment_intent::{PaymentIntent, PaymentIntentNew, PaymentIntentUpdate},
+    payment_intent::{PaymentIntentNew, PaymentIntentUpdate},
     refund::{Refund, RefundNew, RefundUpdate},
     reverse_lookup::ReverseLookupNew,
+    PaymentIntent,
 };
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -26,13 +26,24 @@ pub struct TypedSql {
 }
 
 impl TypedSql {
-    pub fn to_field_value_pairs(&self) -> crate::StorageResult<Vec<(&str, String)>> {
-        Ok(vec![(
-            "typed_sql",
-            serde_json::to_string(self)
-                .into_report()
-                .change_context(errors::DatabaseError::QueryGenerationFailed)?,
-        )])
+    pub fn to_field_value_pairs(
+        &self,
+        request_id: String,
+        global_id: String,
+    ) -> crate::StorageResult<Vec<(&str, String)>> {
+        let pushed_at = common_utils::date_time::now_unix_timestamp();
+
+        Ok(vec![
+            (
+                "typed_sql",
+                serde_json::to_string(self)
+                    .into_report()
+                    .change_context(errors::DatabaseError::QueryGenerationFailed)?,
+            ),
+            ("global_id", global_id),
+            ("request_id", request_id),
+            ("pushed_at", pushed_at.to_string()),
+        ])
     }
 }
 
@@ -42,7 +53,6 @@ pub enum Insertable {
     PaymentIntent(PaymentIntentNew),
     PaymentAttempt(PaymentAttemptNew),
     Refund(RefundNew),
-    ConnectorResponse(ConnectorResponseNew),
     Address(Box<AddressNew>),
     ReverseLookUp(ReverseLookupNew),
 }
@@ -53,13 +63,13 @@ pub enum Updateable {
     PaymentIntentUpdate(PaymentIntentUpdateMems),
     PaymentAttemptUpdate(PaymentAttemptUpdateMems),
     RefundUpdate(RefundUpdateMems),
-    ConnectorResponseUpdate(ConnectorResponseUpdateMems),
+    AddressUpdate(Box<AddressUpdateMems>),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ConnectorResponseUpdateMems {
-    pub orig: ConnectorResponse,
-    pub update_data: ConnectorResponseUpdate,
+pub struct AddressUpdateMems {
+    pub orig: Address,
+    pub update_data: AddressUpdateInternal,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,6 +1,7 @@
 use std::{marker::PhantomData, str::FromStr};
 
 use api_models::enums::{DisputeStage, DisputeStatus};
+use common_enums::RequestIncrementalAuthorization;
 #[cfg(feature = "payouts")]
 use common_utils::{crypto::Encryptable, pii::Email};
 use common_utils::{errors::CustomResult, ext_traits::AsyncExt};
@@ -41,27 +42,17 @@ pub async fn get_mca_for_payout<'a>(
     key_store: &domain::MerchantKeyStore,
     payout_data: &PayoutData,
 ) -> RouterResult<helpers::MerchantConnectorAccountType> {
-    let payout_attempt = &payout_data.payout_attempt;
     match payout_data.merchant_connector_account.to_owned() {
         Some(mca) => Ok(mca),
         None => {
-            let profile_id = payout_attempt
-                .profile_id
-                .as_ref()
-                .ok_or(errors::ApiErrorResponse::MissingRequiredField {
-                    field_name: "business_profile",
-                })
-                .into_report()
-                .change_context(errors::ApiErrorResponse::InternalServerError)
-                .attach_printable("profile_id is not set in payment_intent")?;
-
             let merchant_connector_account = helpers::get_merchant_connector_account(
                 state,
                 merchant_account.merchant_id.as_str(),
                 None,
                 key_store,
-                profile_id,
+                &payout_data.profile_id,
                 connector_id,
+                payout_data.payout_attempt.merchant_connector_id.as_ref(),
             )
             .await?;
             Ok(merchant_connector_account)
@@ -79,11 +70,6 @@ pub async fn construct_payout_router_data<'a, F>(
     _request: &api_models::payouts::PayoutRequest,
     payout_data: &mut PayoutData,
 ) -> RouterResult<types::PayoutsRouterData<F>> {
-    let (business_country, _) = helpers::get_business_details(
-        payout_data.payout_attempt.business_country,
-        payout_data.payout_attempt.business_label.as_ref(),
-        merchant_account,
-    )?;
     let merchant_connector_account = get_mca_for_payout(
         state,
         connector_id,
@@ -130,10 +116,11 @@ pub async fn construct_payout_router_data<'a, F>(
     let payouts = &payout_data.payouts;
     let payout_attempt = &payout_data.payout_attempt;
     let customer_details = &payout_data.customer_details;
+    let connector_label = format!("{}_{}", payout_data.profile_id, payout_attempt.connector);
     let connector_customer_id = customer_details
         .as_ref()
         .and_then(|c| c.connector_customer.as_ref())
-        .and_then(|cc| cc.get("id"))
+        .and_then(|cc| cc.get(connector_label))
         .and_then(|id| serde_json::from_value::<String>(id.to_owned()).ok());
     let router_data = types::RouterData {
         flow: PhantomData,
@@ -161,7 +148,6 @@ pub async fn construct_payout_router_data<'a, F>(
             source_currency: payouts.source_currency,
             entity_type: payouts.entity_type.to_owned(),
             payout_type: payouts.payout_type,
-            country_code: business_country,
             customer_details: customer_details
                 .to_owned()
                 .map(|c| payments::CustomerDetails {
@@ -189,6 +175,7 @@ pub async fn construct_payout_router_data<'a, F>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
 
     Ok(router_data)
@@ -226,6 +213,7 @@ pub async fn construct_refund_router_data<'a, F>(
         key_store,
         &profile_id,
         connector_id,
+        payment_attempt.merchant_connector_id.as_ref(),
     )
     .await?;
 
@@ -273,6 +261,15 @@ pub async fn construct_refund_router_data<'a, F>(
         None
     };
 
+    let browser_info: Option<types::BrowserInformation> = payment_attempt
+        .browser_info
+        .clone()
+        .map(|b| b.parse_value("BrowserInformation"))
+        .transpose()
+        .change_context(errors::ApiErrorResponse::InvalidDataValue {
+            field_name: "browser_info",
+        })?;
+
     let router_data = types::RouterData {
         flow: PhantomData,
         merchant_id: merchant_account.merchant_id.clone(),
@@ -301,6 +298,7 @@ pub async fn construct_refund_router_data<'a, F>(
             connector_metadata: payment_attempt.connector_metadata.clone(),
             reason: refund.refund_reason.clone(),
             connector_refund_id: refund.connector_refund_id.clone(),
+            browser_info,
         },
 
         response: Ok(types::RefundsResponseData {
@@ -329,6 +327,7 @@ pub async fn construct_refund_router_data<'a, F>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
 
     Ok(router_data)
@@ -502,6 +501,7 @@ pub async fn construct_accept_dispute_router_data<'a>(
         key_store,
         &profile_id,
         &dispute.connector,
+        payment_attempt.merchant_connector_id.as_ref(),
     )
     .await?;
 
@@ -557,6 +557,7 @@ pub async fn construct_accept_dispute_router_data<'a>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
     Ok(router_data)
 }
@@ -591,6 +592,7 @@ pub async fn construct_submit_evidence_router_data<'a>(
         key_store,
         &profile_id,
         connector_id,
+        payment_attempt.merchant_connector_id.as_ref(),
     )
     .await?;
 
@@ -643,6 +645,7 @@ pub async fn construct_submit_evidence_router_data<'a>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
     Ok(router_data)
 }
@@ -678,8 +681,10 @@ pub async fn construct_upload_file_router_data<'a>(
         key_store,
         &profile_id,
         connector_id,
+        payment_attempt.merchant_connector_id.as_ref(),
     )
     .await?;
+
     let test_mode: Option<bool> = merchant_connector_account.is_test_mode_on();
     let auth_type: types::ConnectorAuthType = merchant_connector_account
         .get_connector_account_details()
@@ -734,6 +739,7 @@ pub async fn construct_upload_file_router_data<'a>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
     Ok(router_data)
 }
@@ -768,6 +774,7 @@ pub async fn construct_defend_dispute_router_data<'a>(
         key_store,
         &profile_id,
         connector_id,
+        payment_attempt.merchant_connector_id.as_ref(),
     )
     .await?;
 
@@ -823,6 +830,7 @@ pub async fn construct_defend_dispute_router_data<'a>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
     Ok(router_data)
 }
@@ -852,6 +860,7 @@ pub async fn construct_retrieve_file_router_data<'a>(
         key_store,
         profile_id,
         connector_id,
+        file_metadata.merchant_connector_id.as_ref(),
     )
     .await?;
 
@@ -905,6 +914,7 @@ pub async fn construct_retrieve_file_router_data<'a>(
         connector_http_status_code: None,
         external_latency: None,
         apple_pay_flow: None,
+        frm_metadata: None,
     };
     Ok(router_data)
 }
@@ -1058,4 +1068,35 @@ pub fn get_flow_name<F>() -> RouterResult<String> {
         .into_report()
         .attach_printable("Flow stringify failed")?
         .to_string())
+}
+
+pub fn get_request_incremental_authorization_value(
+    request_incremental_authorization: Option<bool>,
+    capture_method: Option<common_enums::CaptureMethod>,
+) -> RouterResult<Option<RequestIncrementalAuthorization>> {
+    Some(request_incremental_authorization
+        .map(|request_incremental_authorization| {
+            if request_incremental_authorization {
+                if capture_method == Some(common_enums::CaptureMethod::Automatic) {
+                    Err(errors::ApiErrorResponse::NotSupported { message: "incremental authorization is not supported when capture_method is automatic".to_owned() }).into_report()?
+                }
+                Ok(RequestIncrementalAuthorization::True)
+            } else {
+                Ok(RequestIncrementalAuthorization::False)
+            }
+        })
+        .unwrap_or(Ok(RequestIncrementalAuthorization::default()))).transpose()
+}
+
+pub fn get_incremental_authorization_allowed_value(
+    incremental_authorization_allowed: Option<bool>,
+    request_incremental_authorization: Option<RequestIncrementalAuthorization>,
+) -> Option<bool> {
+    if request_incremental_authorization
+        == Some(common_enums::RequestIncrementalAuthorization::False)
+    {
+        Some(false)
+    } else {
+        incremental_authorization_allowed
+    }
 }

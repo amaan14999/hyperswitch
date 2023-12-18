@@ -30,7 +30,7 @@ pub async fn customers_create(
     json_payload: web::Json<customers::CustomerRequest>,
 ) -> HttpResponse {
     let flow = Flow::CustomersCreate;
-    api::server_wrap(
+    Box::pin(api::server_wrap(
         flow,
         state,
         &req,
@@ -38,7 +38,7 @@ pub async fn customers_create(
         |state, auth, req| create_customer(state, auth.merchant_account, auth.key_store, req),
         &auth::ApiKeyAuth,
         api_locking::LockAction::NotApplicable,
-    )
+    ))
     .await
 }
 /// Retrieve Customer
@@ -85,6 +85,37 @@ pub async fn customers_retrieve(
     )
     .await
 }
+
+/// List customers for a merchant
+///
+/// To filter and list the customers for a particular merchant id
+#[utoipa::path(
+    post,
+    path = "/customers/list",
+    responses(
+        (status = 200, description = "Customers retrieved", body = Vec<CustomerResponse>),
+        (status = 400, description = "Invalid Data"),
+    ),
+    tag = "Customers List",
+    operation_id = "List all Customers for a Merchant",
+    security(("api_key" = []))
+)]
+#[instrument(skip_all, fields(flow = ?Flow::CustomersList))]
+pub async fn customers_list(state: web::Data<AppState>, req: HttpRequest) -> HttpResponse {
+    let flow = Flow::CustomersList;
+
+    api::server_wrap(
+        flow,
+        state,
+        &req,
+        (),
+        |state, auth, _| list_customers(state, auth.merchant_account.merchant_id, auth.key_store),
+        &auth::ApiKeyAuth,
+        api_locking::LockAction::NotApplicable,
+    )
+    .await
+}
+
 /// Update Customer
 ///
 /// Updates the customer's details in a customer object.
@@ -111,7 +142,7 @@ pub async fn customers_update(
     let flow = Flow::CustomersUpdate;
     let customer_id = path.into_inner();
     json_payload.customer_id = customer_id;
-    api::server_wrap(
+    Box::pin(api::server_wrap(
         flow,
         state,
         &req,
@@ -119,7 +150,7 @@ pub async fn customers_update(
         |state, auth, req| update_customer(state, auth.merchant_account, req, auth.key_store),
         &auth::ApiKeyAuth,
         api_locking::LockAction::NotApplicable,
-    )
+    ))
     .await
 }
 /// Delete Customer
@@ -148,7 +179,7 @@ pub async fn customers_delete(
         customer_id: path.into_inner(),
     })
     .into_inner();
-    api::server_wrap(
+    Box::pin(api::server_wrap(
         flow,
         state,
         &req,
@@ -156,7 +187,7 @@ pub async fn customers_delete(
         |state, auth, req| delete_customer(state, auth.merchant_account, req, auth.key_store),
         &auth::ApiKeyAuth,
         api_locking::LockAction::NotApplicable,
-    )
+    ))
     .await
 }
 #[instrument(skip_all, fields(flow = ?Flow::CustomersGetMandates))]

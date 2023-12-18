@@ -65,7 +65,7 @@ impl ErrorSwitch<api_models::errors::types::ApiErrorResponse> for ApiErrorRespon
             }
             Self::MaximumRefundCount => AER::BadRequest(ApiError::new("IR", 12, "Reached maximum refund attempts", None)),
             Self::RefundAmountExceedsPaymentAmount => {
-                AER::BadRequest(ApiError::new("IR", 13, "Refund amount exceeds the payment amount", None))
+                AER::BadRequest(ApiError::new("IR", 13, "The refund amount exceeds the amount captured", None))
             }
             Self::PaymentUnexpectedState {
                 current_flow,
@@ -264,6 +264,12 @@ impl ErrorSwitch<api_models::errors::types::ApiErrorResponse> for ApiErrorRespon
             Self::ResourceBusy => {
                 AER::Unprocessable(ApiError::new("WE", 5, "There was an issue processing the webhook body", None))
             }
+            Self::PaymentLinkNotFound => {
+                AER::NotFound(ApiError::new("HE", 2, "Payment Link does not exist in our records", None))
+            }
+            Self::InvalidConnectorConfiguration {config} => {
+                AER::BadRequest(ApiError::new("IR", 24, format!("Merchant connector account is configured with invalid {config}"), None))
+            }
         }
     }
 }
@@ -309,6 +315,12 @@ impl ErrorSwitch<api_models::errors::types::ApiErrorResponse> for CustomersError
                 "HE",
                 2,
                 "Customer does not exist in our records",
+                None,
+            )),
+            Self::CustomerAlreadyExists => AER::BadRequest(ApiError::new(
+                "IR",
+                12,
+                "Customer with the given `customer_id` already exists",
                 None,
             )),
         }
